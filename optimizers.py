@@ -77,7 +77,7 @@ class Optimizer(object):
         boundaries = np.arange(self.num_initial_sweeps, self.num_train_sweeps,
                                self.num_sweeps_per_decay, dtype=np.int32)
         values = [self.initial_learning_rate * self.decay_factor**i
-                  for i in xrange(len(boundaries)+1)]
+                  for i in range(len(boundaries)+1)]
         self._learning_rate = piecewise_constant(self.num_sweeps_visited,
                                                  boundaries, values)
 

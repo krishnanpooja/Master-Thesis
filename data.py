@@ -1,15 +1,20 @@
 from __future__ import division, print_function
 
+import os
+import glob
 import itertools
-import pickle
-
+import pickle as cPickle
 import numpy as np
 import matplotlib.pyplot as plt
 
-
+cmaps = [ ('Sequential', ['Reds'])]
+uncertain_colors = {111:'white', 222:'tab:red'}
+#uncertain_colors = {111:'tab:red', 222:'tab:pink', 333:'tab:cyan', 444:'tab:blue'}
+colors_gesture = {'G1':'tab:blue', 'G2':'tab:orange', 'G3':'tab:green', 'G4':'tab:red', 'G5':'tab:purple','G6':'tab:brown','G8':'black','G9':'tab:gray','G10':'tab:olive','G11':'tab:cyan'}
+colors = {0:'tab:blue', 1:'tab:orange', 2:'tab:green', 3:'tab:red', 4:'tab:purple',5:'tab:brown',6:'tab:pink',7:'tab:gray',8:'tab:olive',9:'tab:cyan'}
 class Dataset(object):
 
-    def __init__(self, pkl_path):
+    def __init__(self, pkl_path,filename,model_type):
         """ Create a Dataset object from a standardized Pickle file.
 
         JIGSAWS and MISTIC contain similar underlying data, namely kinematics
@@ -19,15 +24,22 @@ class Dataset(object):
 
         Args:
             pkl_path: A string. A path to the standardized Pickle file.
+            model_type: conv3d or LSTM
         """
+        if model_type=='Conv3d':
+            self.pkl_dict={}
+            for pkl in (glob.glob(os.path.join(pkl_path, 'standardized_img_data_*.pkl'))):
+                with open(pkl, 'rb') as f:
+                         self.pkl_dict.update(cPickle.load(f))
+        else:
+            pkl_path = os.path.join(pkl_path, filename)
+            with open(pkl_path, 'r') as f:
+                self.pkl_dict = cPickle.load(f)
 
-        with open(pkl_path, 'r') as f:
-            self.pkl_dict = cPickle.load(f)
+        #assert all(seq.shape[1] - 1 == self.input_size
+         #          for seq in self.all_data.values())
 
-        assert all(seq.shape[1] - 1 == self.input_size
-                   for seq in self.all_data.values())
-
-    def get_seqs_by_user(self, user):
+    def get_seqs_by_user(self, user,trial,train):
         """ Get a list of sequences corresponding to a user.
 
         Args:
@@ -36,28 +48,47 @@ class Dataset(object):
         Returns:
             A list of sequences corresponding to `user`.
         """
-
+        ##LOUO
+        if trial==999:
+            trial_names = sorted(self.user_to_trial_names[user])
+            seqs = [self.all_data[trial_name] for trial_name in trial_names]
+            for s in seqs:
+                print('s.shape:', s.shape)
+            return seqs
+        ## LOTO
         trial_names = sorted(self.user_to_trial_names[user])
-        seqs = [self.all_data[trial_name] for trial_name in trial_names]
+        print('initially:',trial_names)
+        if train:
+            trial_names = [ x for x in trial_names if str(trial) not in x ]
+            seqs = [self.all_data[trial_name] for trial_name in trial_names]
+        else:
+            trial_names = [ x for x in trial_names if str(trial) in x ]
+            print('Test trials',trial_names)
+            seqs = [self.all_data[trial_name] for trial_name in trial_names]
+
         return seqs
 
-    def get_splits(self, test_users):
+    def get_splits(self, test_users,test_trials):
         """ Get all sequences, split into a training set and a testing set.
 
         Args:
             test_users: A list of strings.
-
+            test_trials : A trial to be left out
+            
         Returns:
             A tuple,
             train_seqs: A list of train sequences.
             test_seqs: A list of test sequences.
         """
-
-        train_users = [user for user in self.all_users
+        if test_trials==999:
+            train_users = [user for user in self.all_users
                        if user not in test_users]
-        train_seqs = list(itertools.chain(*[self.get_seqs_by_user(user)
+        else:
+            train_users = [user for user in self.all_users]
+        print('train_users:',train_users)
+        train_seqs = list(itertools.chain(*[self.get_seqs_by_user(user,test_trials,True)
                                             for user in train_users]))
-        test_seqs = list(itertools.chain(*[self.get_seqs_by_user(user)
+        test_seqs = list(itertools.chain(*[self.get_seqs_by_user(user,test_trials,False)
                                            for user in test_users]))
 
         # Sanity check
@@ -117,7 +148,8 @@ class Dataset(object):
     @property
     def input_size(self):
         """ An integer: the number of inputs per time step. """
-        return self.all_data.values()[0].shape[1] - 1
+        v = list(self.all_data.values())
+        return v[0].shape[1] - 1
 
 
 def normalize_seq(seq):
@@ -155,14 +187,40 @@ def prepare_raw_seq(seq):
         reset_seq: A 2-D bool NumPy array with shape `[duration, 1]`.
         label_seq: A 2-D int NumPy array with shape `[duration, 1]`.
     """
+    input_seq = seq[:, :-1].astype(np.float)
+    input_seq = normalize_seq(input_seq).astype(np.float32)
+    input_seq = np.nan_to_num(input_seq)
+    label_seq = seq[:, -1:].astype(np.int)
+    duration = input_seq.shape[0]
+    reset_seq = np.eye(1, duration, dtype=np.bool).T
+    return input_seq, reset_seq, label_seq
 
+def prepare_raw_frame_seq(seq):
+    """ Prepare a raw sequence for training/testing.
+
+    This function a) splits a raw sequence into input and label sequences; b)
+    prepares a reset sequence (for handling RNN state resets); and c)
+    normalizes each input sequence.
+
+    Args:
+        seq: A 2-D NumPy array with shape `[duration, num_inputs + 1]`.
+            The last column stores labels.
+
+    Returns:
+        A tuple,
+        input_seq: A 2-D float32 NumPy array with shape
+            `[duration, num_inputs]`. A normalized input sequence.
+        reset_seq: A 2-D bool NumPy array with shape `[duration, 1]`.
+        label_seq: A 2-D int NumPy array with shape `[duration, 1]`.
+    """
+    
     input_seq = seq[:, :-1].astype(np.float)
     input_seq = normalize_seq(input_seq).astype(np.float32)
     duration = input_seq.shape[0]
     reset_seq = np.eye(1, duration, dtype=np.bool).T
     label_seq = seq[:, -1:].astype(np.int)
     return input_seq, reset_seq, label_seq
-
+    
 
 def seq_ind_generator(num_seqs, shuffle=True):
     """ A sequence-index generator.
@@ -175,7 +233,7 @@ def seq_ind_generator(num_seqs, shuffle=True):
         An integer in `[0, num_seqs)`.
     """
 
-    seq_inds = range(num_seqs)
+    seq_inds = list(range(num_seqs))
     while True:
         if shuffle:
             np.random.shuffle(seq_inds)
@@ -215,7 +273,7 @@ def sweep_generator(seq_list_list, batch_size, shuffle=False, num_sweeps=None):
 
     if num_sweeps is None:
         num_sweeps = np.inf
-
+        
     seq_durations = [len(seq) for seq in seq_list_list[0]]
     num_seqs = len(seq_list_list[0])
     seq_ind_gen = seq_ind_generator(num_seqs, shuffle=shuffle)
@@ -226,12 +284,12 @@ def sweep_generator(seq_list_list, batch_size, shuffle=False, num_sweeps=None):
 
     num_sweeps_visited = 0
     while num_sweeps_visited < num_sweeps:
-
-        new_seq_ind = [seq_ind_gen.next() for _ in xrange(batch_size)]
+        std = 0.01*(num_sweeps_visited%7)
+        #print('std :',std,num_sweeps_visited)
+        new_seq_ind = [seq_ind_gen.next() for _ in range(batch_size)]
         new_seq_durations = [seq_durations[i] for i in new_seq_ind]
-        longest_duration = np.max(new_seq_durations)
-        pad = lambda seq: np.pad(seq, [[0, longest_duration-len(seq)], [0, 0]],
-                                 mode='wrap')
+        longest_duration = np.max(new_seq_durations)#adding noise
+        pad = lambda seq: np.pad(seq + (np.random.normal(0.0, std,np.shape(seq))) , [[0, longest_duration-len(seq)], [0, 0]],mode='wrap') if seq.shape[1]!=1 else np.pad(seq, [[0, longest_duration-len(seq)], [0, 0]],mode='wrap')
 
         new_sweep_list = []
         for seq_list in seq_list_list:
@@ -243,7 +301,7 @@ def sweep_generator(seq_list_list, batch_size, shuffle=False, num_sweeps=None):
         num_sweeps_visited += 1
 
 
-def plot_label_seq(label_seq, num_classes, y_value):
+def plot_label_seq(label_seq, num_classes, y_value,colors=colors,trial=False):
     """ Plot a label sequence.
 
     The sequence will be shown using a horizontal colored line, with colors
@@ -256,13 +314,21 @@ def plot_label_seq(label_seq, num_classes, y_value):
     """
 
     label_seq = label_seq.flatten()
+    new_seq = [colors[letter] for letter in label_seq]
     x = np.arange(0, label_seq.size)
     y = y_value*np.ones(label_seq.size)
-    plt.scatter(x, y, c=label_seq, marker='|', lw=2, vmin=0, vmax=num_classes)
+    plt.scatter(x, y,c=new_seq,marker='|',lw=2, vmin=0, vmax=num_classes)
 
+def plot_uncertainity(std_err,seq_len,seq_len_completed,y_value=-2):
+    label_seq = std_err[seq_len_completed:seq_len_completed+seq_len]
+    label_seq = label_seq.flatten()
+    new_seq = label_seq #[uncertain_colors[letter] for letter in label_seq]
+    x = np.arange(0, label_seq.size)
+    y = y_value*np.ones(label_seq.size)
+    plt.scatter(x, y,c=new_seq, cmap=plt.get_cmap('Reds'),marker='|',lw=2, vmin=0, vmax=4)
 
-def visualize_predictions(prediction_seqs, label_seqs, num_classes,
-                          fig_width=6.5, fig_height_per_seq=0.5):
+def visualize_predictions(prediction_seqs, label_seqs, num_classes,entropy,
+                          fig_width=9.5, fig_height_per_seq=0.5):
     """ Visualize predictions vs. ground truth.
 
     Args:
@@ -278,20 +344,26 @@ def visualize_predictions(prediction_seqs, label_seqs, num_classes,
     """
 
     num_seqs = len(label_seqs)
+    print('len(label_seqs):',len(label_seqs))
     max_seq_length = max([seq.shape[0] for seq in label_seqs])
+    #print('max_seq_length',max_seq_length)
     figsize = (fig_width, num_seqs*fig_height_per_seq)
     fig, axes = plt.subplots(nrows=num_seqs, ncols=1,
                              sharex=True, figsize=figsize)
-
+    seq_len_completed = 0
     for pred_seq, label_seq, ax in zip(prediction_seqs, label_seqs, axes):
         plt.sca(ax)
         plot_label_seq(label_seq, num_classes, 1)
         plot_label_seq(pred_seq, num_classes, -1)
-        ax.get_xaxis().set_visible(False)
+        plot_uncertainity(entropy,len(label_seq),seq_len_completed)
+        seq_len_completed += len(label_seq)
+        ax.get_xaxis().set_visible(True)
         ax.get_yaxis().set_visible(False)
         plt.xlim(0, max_seq_length)
         plt.ylim(-2.75, 2.75)
         plt.tight_layout()
+    #markers = [plt.Line2D([0,0],[0,0],color=color, marker='o', linestyle='') for color in colors_gesture.values()]
+    #axes[0].legend(markers, colors_gesture.keys(), numpoints=1, ncol=10,fontsize='xx-small') 
 
     return fig, axes
 

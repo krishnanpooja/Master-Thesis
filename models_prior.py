@@ -41,19 +41,19 @@ class LSTM(object):
         self.dropout_keep_prob = dropout_keep_prob
         self.input_size = inputs.get_shape().as_list()[2]
 
-        batch_states_shape = tf.stack([tf.shape(inputs)[0],
+        batch_states_shape = tf.pack([tf.shape(inputs)[0],
                                       2*self.hidden_layer_size])
         self._batch_start_states = tf.zeros(batch_states_shape,
                                             dtype=tf.float32)
         keep_prob = tf.cond(training,
-                            lambda: tf.constant(self.dropout_keep_prob) ,#lambda: tf.constant(1.0))
-                            lambda: tf.constant(self.dropout_keep_prob)) #enable for MC_Dropout)
-
+                            lambda: tf.constant(self.dropout_keep_prob),
+                            lambda: tf.constant(1.0))
         if trainable:
               initializer = tf.random_uniform_initializer(-self.init_scale,
                                                     self.init_scale)
         else:
               initializer = tf.glorot_uniform_initializer()
+
         with tf.variable_scope('LSTM', initializer=initializer):
 
             # We need to swap the batch, time axes since tf.scan will split
@@ -63,7 +63,7 @@ class LSTM(object):
 
             states_list = []
             prev_layer_outputs = tf.nn.dropout(inputs, keep_prob)
-            for layer in range(0,self.num_layers):
+            for layer in xrange(self.num_layers):
 
                 def fixed_size_lstm_block(c_prev_and_m_prev, x_and_r):
                     if layer == 0:
@@ -73,8 +73,8 @@ class LSTM(object):
                     return self._lstm_block(c_prev_and_m_prev, x_and_r,
                                             block_input_size,trainable)
 
-                x_and_r = tf.concat([prev_layer_outputs,
-                                        tf.cast(resets, tf.float32)], 2)
+                x_and_r = tf.concat(2, [prev_layer_outputs,
+                                        tf.cast(resets, tf.float32)])
                 with tf.variable_scope('layer%d' % layer):
                     c_and_m = tf.scan(fixed_size_lstm_block, x_and_r,
                                       initializer=self._batch_start_states)
@@ -82,8 +82,8 @@ class LSTM(object):
                 prev_layer_outputs = tf.nn.dropout(
                     c_and_m[:, :, self.hidden_layer_size:], keep_prob)
 
-            _states = tf.concat([tf.expand_dims(states, 2)
-                                    for states in states_list], 2)
+            _states = tf.concat(2, [tf.expand_dims(states, 2)
+                                    for states in states_list])
 
             # Now put the batch, time axes back.
             self._states = tf.transpose(_states, [1, 0, 2, 3])
@@ -113,7 +113,7 @@ class LSTM(object):
 
         def xmul(tensor, weights_name):
             W = tf.get_variable(weights_name, shape=[block_input_size,
-                                                     self.hidden_layer_size],trainable=btrainable)
+                                                     self.hidden_layer_size],trainable=btrainable )
             return tf.matmul(tensor, W)
 
         def mmul(tensor, weights_name):
@@ -135,10 +135,10 @@ class LSTM(object):
 
         # If r[i] is True, revert back to initial states. Otherwise, keep
         # the states from the previous time step.
-        c_prev_and_m_prev = tf.where(r,
+        c_prev_and_m_prev = tf.select(r,
                                       self._batch_start_states,
                                       c_prev_and_m_prev)
-        c_prev, m_prev = tf.split(c_prev_and_m_prev, 2, 1)
+        c_prev, m_prev = tf.split(1, 2, c_prev_and_m_prev)
 
         x_tilde = tf.tanh( xmul(x, 'W_xx') +
                            mmul(m_prev, 'W_xm') + bias('b_x') )
@@ -151,7 +151,7 @@ class LSTM(object):
                         diagcmul(c, 'w_oc') + bias('b_o') )
         m = o*tf.tanh(c)
 
-        c_and_m = tf.concat([c, m], 1)
+        c_and_m = tf.concat(1, [c, m])
         return c_and_m
 
     @property
@@ -211,19 +211,16 @@ class LSTMModel(object):
             b = tf.get_variable('b', shape=[self.target_size])
             outputs_matrix = tf.reshape(outputs, [-1, output_size])
             logits = tf.nn.xw_plus_b(outputs_matrix, W, b)
-            batch_size, duration, _ = tf.unstack(tf.shape(self.inputs))
-            logits_shape = tf.stack([batch_size, duration, self.target_size])
+            batch_size, duration, _ = tf.unpack(tf.shape(self.inputs))
+            logits_shape = tf.pack([batch_size, duration, self.target_size])
             self._logits = tf.reshape(logits, logits_shape, name='logits')
-            self.softmax = tf.nn.softmax(self._logits)
 
         with tf.variable_scope('loss'):
-            logits = tf.reshape(self.softmax, [-1, self.target_size])
+            logits = tf.reshape(self.logits, [-1, self.target_size])
             targets = tf.reshape(self.targets, [-1, self.target_size])
-            cross_entropies = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits,
-                                                                      labels=targets)
-            l2_loss = 0.001 * tf.add_n(
-     [tf.nn.l2_loss(tf.cast(v, tf.float32)) for v in tf.trainable_variables()])
-            self._loss = tf.reduce_mean(cross_entropies, name='loss') + l2_loss
+            cross_entropies = tf.nn.softmax_cross_entropy_with_logits(logits,
+                                                                      targets)
+            self._loss = tf.reduce_mean(cross_entropies, name='loss')
 
     def _compute_rnn_outputs(self):
         """ Compute RNN outputs.
@@ -312,12 +309,12 @@ class ReverseLSTMModel(LSTMModel):
         super(ReverseLSTMModel, self).__init__(*args)
 
     def _compute_rnn_outputs(self):
-        reversed_inputs = tf.reverse(self.inputs, [1])
-        reversed_resets = tf.reverse(self.resets, [1])
+        reversed_inputs = tf.reverse(self.inputs, [False, True, False])
+        reversed_resets = tf.reverse(self.resets, [False, True, False])
         self._rv_lstm = LSTM(reversed_inputs, reversed_resets, self.training,
                              self.num_layers, self.hidden_layer_size,
                              self.init_scale, self.dropout_keep_prob)
-        outputs = tf.reverse(self._rv_lstm.outputs, [1])
+        outputs = tf.reverse(self._rv_lstm.outputs, [False, True, False])
         return outputs
 
     def _compute_rnn_output_size(self):
@@ -336,8 +333,8 @@ class BidirectionalLSTMModel(LSTMModel):
 
     def _compute_rnn_outputs(self):
 
-        reversed_inputs = tf.reverse(self.inputs, [1])
-        reversed_resets = tf.reverse(self.resets, [1])
+        reversed_inputs = tf.reverse(self.inputs, [False, True, False])
+        reversed_resets = tf.reverse(self.resets, [False, True, False])
         with tf.variable_scope('fw'):
             self._fw_lstm = LSTM(self.inputs, self.resets, self.training,
                                  self.num_layers, self.hidden_layer_size,
@@ -349,15 +346,15 @@ class BidirectionalLSTMModel(LSTMModel):
                                  self.dropout_keep_prob)
 
         fw_outputs = self._fw_lstm.outputs
-        rv_outputs = tf.reverse(self._rv_lstm.outputs, [1])
-        outputs = tf.concat([fw_outputs, rv_outputs], 2)
+        rv_outputs = tf.reverse(self._rv_lstm.outputs, [False, True, False])
+        outputs = tf.concat(2, [fw_outputs, rv_outputs])
         return outputs
 
     def _compute_rnn_output_size(self):
         return self._fw_lstm.hidden_layer_size + self._rv_lstm.hidden_layer_size
 
 
-class BidirectionalLSTMWithRandomPriorModel(LSTMModel):
+class BidirectionalLSTMModelWithRandomPrior(LSTMModel):
 
     def __init__(self, *args):
         """ Create a bidirectional LSTM model.
@@ -365,11 +362,12 @@ class BidirectionalLSTMWithRandomPriorModel(LSTMModel):
         Args:
             See `LSTMModel`.
         """
-        super(BidirectionalLSTMWithRandomPriorModel, self).__init__(*args)
+        super(BidirectionalLSTMModel, self).__init__(*args)
 
     def _compute_rnn_outputs(self):
-        reversed_inputs = tf.reverse(self.inputs, [1])
-        reversed_resets = tf.reverse(self.resets, [1])
+
+        reversed_inputs = tf.reverse(self.inputs, [False, True, False])
+        reversed_resets = tf.reverse(self.resets, [False, True, False])
         with tf.variable_scope('fw'):
             self._fw_lstm = LSTM(self.inputs, self.resets, self.training,
                                  self.num_layers, self.hidden_layer_size,
@@ -381,73 +379,29 @@ class BidirectionalLSTMWithRandomPriorModel(LSTMModel):
                                  self.dropout_keep_prob)
         with tf.variable_scope('fw_random_prior'):
             self._fw_lstm_random_prior = LSTM(self.inputs, self.resets, self.training,
-                                              self.num_layers, self.hidden_layer_size,
-                                              self.init_scale, self.dropout_keep_prob, False)
+                                 self.num_layers, self.hidden_layer_size,
+                                 self.init_scale, self.dropout_keep_prob,False)
         with tf.variable_scope('rv_random_prior'):
             self._rv_lstm_random_prior = LSTM(reversed_inputs, reversed_resets,
-                                              self.training, self.num_layers,
-                                              self.hidden_layer_size, self.init_scale,
-                                              self.dropout_keep_prob, False)
+                                 self.training, self.num_layers,
+                                 self.hidden_layer_size, self.init_scale,
+                                 self.dropout_keep_prob,False)
         fw_outputs = self._fw_lstm.outputs
-        rv_outputs = tf.reverse(self._rv_lstm.outputs, [1])
-        outputs = tf.concat([fw_outputs, rv_outputs], 2)
+        rv_outputs = tf.reverse(self._rv_lstm.outputs, [False, True, False])
+        outputs = tf.concat(2, [fw_outputs, rv_outputs])
         fw_outputs_random_prior = self._fw_lstm_random_prior.outputs
-        rv_outputs_random_prior = tf.reverse(self._rv_lstm_random_prior.outputs, [1])
-        outputs_random_prior = tf.concat([fw_outputs_random_prior, rv_outputs_random_prior], 2)
-
+        rv_outputs_random_prior = tf.reverse(self._rv_lstm_random_prior.outputs, [False, True, False])
+        outputs_random_prior = tf.concat(2, [fw_outputs_random_prior, rv_outputs_random_prior])
+           
         # using a lambda layer so we can control the weight (beta) of the prior network
-        prior_output = tf.multiply(outputs_random_prior, 3.0, name="prior_output")
-        output_final = tf.add(outputs, prior_output)
+        prior_output = tf.math.multiply(outputs_random_prior,3.0,name="prior_output")
+        output_final=tf.add(outputs,prior_output)
         return output_final
 
     def _compute_rnn_output_size(self):
         return self._fw_lstm.hidden_layer_size + self._rv_lstm.hidden_layer_size
 
-
-def test_predict(sess, model, input_seqs, reset_seqs, sample_times, test_label_seqs):
-    """ Compute prediction sequences from input sequences.
-
-    Args:
-        sess: A Session.
-        model: An LSTMModel.
-        input_seqs: A list of input sequences, each a float32 NumPy array with
-            shape `[duration, input_size]`.
-        reset_seqs: A list of reset sequences, each a bool NumPy array with
-            shape `[duration, 1]`.
-
-    Returns:
-        A list of prediction sequences, each a NumPy array with shape
-        `[duration, 1]`, containing predicted labels for each time step.
-    """
-    err = 0.0
-    batch_size = len(input_seqs)
-    seq_durations = [len(seq) for seq in input_seqs]
-
-    print('batch_size,seq_durations:', batch_size, seq_durations)
-    input_sweep, reset_sweep = data.sweep_generator(
-        [input_seqs, reset_seqs], batch_size=batch_size).next()
-    print('input_sweep.shape:', input_sweep.shape)
-    # init empty predictions
-    y_ = np.zeros((sample_times, batch_size, input_sweep.shape[1]))
-    for sample_id in range(sample_times):
-        logit_sweep = sess.run(model.logits, feed_dict={model.inputs: input_sweep,
-                                                        model.resets: reset_sweep,
-                                                        model.training: False})
-
-        logit_seqs = [seq[:duration]
-                      for (seq, duration) in zip(logit_sweep, seq_durations)]
-        prediction_seqs = [np.argmax(seq, axis=1).reshape(-1, 1)
-                           for seq in logit_seqs]
-        print(np.asarray(logit_sweep).shape, np.asarray(prediction_seqs).shape)
-        y_[sample_id] = np.asarray(np.argmax(logit_sweep, axis=1))
-    mean_y = y_.mean(axis=0)
-    # evaluate against labels
-    y = test_label_seqs
-    # compute error
-    err += np.count_nonzero(np.not_equal(mean_y.argmax(axis=1), y.argmax(axis=1)))
-
-    return prediction_seqs, err
-
+		
 def predict(sess, model, input_seqs, reset_seqs):
     """ Compute prediction sequences from input sequences.
 
@@ -463,22 +417,19 @@ def predict(sess, model, input_seqs, reset_seqs):
         A list of prediction sequences, each a NumPy array with shape
         `[duration, 1]`, containing predicted labels for each time step.
     """
+
     batch_size = len(input_seqs)
     seq_durations = [len(seq) for seq in input_seqs]
     input_sweep, reset_sweep = data.sweep_generator(
-            [input_seqs, reset_seqs], batch_size=batch_size).next() 
-    logit_sweep,softmax = sess.run([model.logits,model.softmax] , feed_dict={model.inputs: input_sweep,
+        [input_seqs, reset_seqs], batch_size=batch_size).next()
+
+    logit_sweep = sess.run(model.logits, feed_dict={model.inputs: input_sweep,
                                                     model.resets: reset_sweep,
                                                     model.training: False})
 
-    softmax_dur = [seq[:duration]
-                          for (seq, duration) in zip(softmax, seq_durations)]
     logit_seqs = [seq[:duration]
-                          for (seq, duration) in zip(logit_sweep, seq_durations)]
-    #prediction_seqs = [np.argmax(seq, axis=1).reshape(-1, 1)
-    #                   for seq in logit_seqs]
-    prediction_seqs = [(-seq).argsort(axis=1)[:3].reshape(-1, 3)
+                  for (seq, duration) in zip(logit_sweep, seq_durations)]
+    prediction_seqs = [np.argmax(seq, axis=1).reshape(-1, 1)
                        for seq in logit_seqs]
-    print("prediction_seqs:",prediction_seqs[0].shape)
-    print("logit_seqs:",logit_seqs[0].shape)
-    return (prediction_seqs,softmax_dur)
+
+    return prediction_seqs

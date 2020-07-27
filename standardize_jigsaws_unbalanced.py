@@ -14,8 +14,6 @@ import matplotlib.pyplot as plt
 
 import data
 
-from imblearn.combine import SMOTETomek
-
 DATASET_NAME = 'JIGSAWS'
 ORIG_CLASS_IDS = [1, 2, 3, 4, 5, 6, 8, 9, 10, 11] # suturing labels
 NEW_CLASS_IDS = range(len(ORIG_CLASS_IDS))
@@ -27,14 +25,14 @@ NUM_CLASSES = len(CLASSES)
 # JIGSAWS/Experimental/Suturing/unBalanced/GestureRecognition/UserOut
 # (User H's 2nd trial is left out because no video was available for labeling.)
 USER_TO_TRIALS = {
- #   'B': [1, 2, 3, 4, 5],
-#    'C': [1, 2, 3, 4, 5],
-#    'D': [1, 2, 3, 4, 5],
-#    'E': [1, 2, 3, 4, 5],
-#    'F': [1, 2, 3, 4, 5],
-#    'G': [1, 2, 3, 4, 5]
+    'B': [1, 2, 3, 4, 5],
+    'C': [1, 2, 3, 4, 5],
+    'D': [1, 2, 3, 4, 5],
+    'E': [1, 2, 3, 4, 5],
+    'F': [1, 2, 3, 4, 5],
+    'G': [1, 2, 3, 4, 5],
     'H': [1,    3, 4, 5],
-#    'I': [1, 2, 3, 4, 5]
+    'I': [1, 2, 3, 4, 5]
 }
 
 ALL_USERS = sorted(USER_TO_TRIALS.keys())
@@ -56,7 +54,6 @@ df_labels = pd.read_csv("/home/kris_po/label_final.csv")
 
 def define_and_process_args():
     """ Define and process command-line arguments.
-
     Returns:
         A Namespace with arguments as attributes.
     """
@@ -66,9 +63,9 @@ def define_and_process_args():
     parser = argparse.ArgumentParser(description=description,
                                      formatter_class=formatter_class)
 
-    parser.add_argument('--data_dir', default='/home/kris_po/sequence/features_SU/',
+    parser.add_argument('--data_dir', default='/volume/USERSTORE/kris_po/Suturing/features_Resnet_Imagenet/',
                         help='Data directory.')
-    parser.add_argument('--data_filename', default='standardized_data.pkl',
+    parser.add_argument('--data_filename', default='standardized_data_translate_crop.pkl',
                         help='''The name of the standardized-data pkl file that
                                 we'll create inside data_dir.''')
 
@@ -77,25 +74,25 @@ def define_and_process_args():
     return args
 
 
-def get_trial_name_capture1(user, trial,capture):
+def get_trial_name_capture1(user, trial,capture,action):
     """ Form a trial name that matches standard JIGSAWS filenames.
-
     Args:
         user: A string.
         trial: An integer.
-
     Returns:
         A string.
     """
-    return 'Suturing_%s%03d%s' % (user, trial,capture)
+    if action is 'none':
+        return 'Suturing_%s%03d%s' % (user, trial,capture)
+    else:
+        return 'Suturing_%s%03d%s%s' % (user, trial,capture,action)
+        
 
 def load_kinematics(data_dir, trial_name):
     """ Load kinematics data.
-
     Args:
         data_dir: A string.
         trial_name: A string.
-
     Returns:
         A 2-D NumPy array with time on the first axis.
     """
@@ -103,24 +100,15 @@ def load_kinematics(data_dir, trial_name):
     #kinematics_dir = os.path.join(data_dir, 'kinematics', 'AllGestures')
     kinematics_path = os.path.join(data_dir, trial_name + ".npy")
     data = np.load(kinematics_path)
-    data = data[:,:]
+    data = data[:,:512]
     return data
 
-def sample(labels_data):
-    userdata = {}
-    labels = np.unique(labels_data)
-    for i in labels:
-        userdata[i] = 500
-    return userdata
-        
-    
+
 def load_kinematics_and_labels(data_dir, trial_name):
     """ Load kinematics data and labels.
-
     Args:
         data_dir: A string.
         trial_name: A string.
-
     Returns:
         A 2-D NumPy array with time on the first axis. Labels are appended
         as a new column to the raw kinematics data (and are therefore
@@ -129,7 +117,6 @@ def load_kinematics_and_labels(data_dir, trial_name):
     '''
     labels_dir = os.path.join(data_dir, 'transcriptions')
     labels_path = os.path.join(labels_dir, trial_name + '.txt')
-
     
     raw_labels_data = np.genfromtxt(labels_path, dtype=np.int,
                                     converters=LABELS_CONVERTERS,
@@ -141,57 +128,43 @@ def load_kinematics_and_labels(data_dir, trial_name):
         labels[mask] = label
     labels_data = labels.reshape(-1, 1)
     '''
-    print('TRIAL NAME:', trial_name)
     kinematics_data = load_kinematics(data_dir, trial_name)
     trial_name=trial_name.replace('_capture1','')
     trial_name=trial_name.replace('_capture2','')
+    trial_name=trial_name.replace('_translate','')
+    trial_name=trial_name.replace('_crop','')
     val = df_labels.loc[df_labels['filename'].str.match(trial_name),['label']]
     labels_data=np.array(val)
-        
-    if 'Suturing_G001' in trial_name:
-        kinematics_data = downsample(kinematics_data,factor=8)
-        labels_data = downsample(labels_data,factor=8)
-    else:
-        kinematics_data = downsample(kinematics_data)
-        labels_data = downsample(labels_data)
-    
     print(kinematics_data.shape,labels_data.shape)
-    smt = SMOTETomek(sampling_strategy='auto', ratio=sample(labels_data))
-    X_smt, y_smt = smt.fit_sample(kinematics_data, labels_data)
-    y_smt = np.expand_dims(y_smt, axis=1)
-    print('X_smt.shape:',X_smt.shape,y_smt.shape)
-    data = np.concatenate([X_smt, y_smt], axis=1)
-    #labeled_data_only_mask = labels_data.flatten() != 0
+    data = np.concatenate([kinematics_data, labels_data], axis=1)
+    labeled_data_only_mask = labels_data.flatten() != 0
 
-    return data#[labeled_data_only_mask, :]
+    return data[labeled_data_only_mask, :]
 
 
 def load_kinematics_and_new_labels(data_dir, trial_name):
     """ Load kinematics data and standardized labels.
-
     Args:
         data_dir: A string.
         trial_name: A string.
-
     Returns:
         A 2-D NumPy array with time on the first axis. Labels are appended as
         a new column and are converted from arbitrary labels (e.g., 1, 3, 5)
         to ordered, nonnegative integers (e.g., 0, 1, 2).
     """
     data = load_kinematics_and_labels(data_dir, trial_name)
+    print('trial_name:',trial_name)
     for orig, new in zip(ORIG_CLASS_IDS, NEW_CLASS_IDS):
         mask = data[:, -1] == orig
         data[mask, -1] = new
     return data
 
 
-def downsample(data, factor=3):
+def downsample(data, factor=6):
     """ Downsample a data matrix.
-
     Args:
         data: A 2-D NumPy array with time on the first axis.
         factor: The factor by which we'll downsample.
-
     Returns:
         A 2-D NumPy array.
     """
@@ -212,10 +185,10 @@ def main():
 
     user_to_trial_names = {}
     for user, trials in USER_TO_TRIALS.items():
-        user_to_trial_names[user] = [get_trial_name_capture1(user, trial, capture)
+        user_to_trial_names[user] = [get_trial_name_capture1(user, trial, capture,action)
                                      for trial in trials
-                                     for capture in ['_capture1','_capture2']]
-                                     #for action in ['Needle_Passing_','Knot_Tying_','Suturing_']]      
+                                     for capture in ['_capture1','_capture2']
+                                     for action in ['none','_translate','_crop']]      
 
     print('Users and corresponding trial names:')
     for user in ALL_USERS:
@@ -231,11 +204,10 @@ def main():
     print()
 
     # Original data is at 30 Hz.
-    all_data = {trial_name: (
-                    load_kinematics_and_new_labels(args.data_dir, trial_name))
+    all_data = {trial_name: downsample(
+                    load_kinematics_and_new_labels(args.data_dir, trial_name),
+                    factor=6)
                 for trial_name in all_trial_names}
-
-        
     print('Downsampled to 5 Hz.')
     print()
 
@@ -267,3 +239,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

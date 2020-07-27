@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Apr 29 14:23:20 2019
+
+@author: kris_po
+"""
+
 from __future__ import division, print_function
 
 import os
@@ -8,13 +16,14 @@ import numpy as np
 import pandas as pd
 import pickle as cPickle
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+from imgaug import augmenters as ia
+import cv2
+
+#import matplotlib
+#matplotlib.use('Agg')
+#import matplotlib.pyplot as plt
 
 import data
-
-from imblearn.combine import SMOTETomek
 
 DATASET_NAME = 'JIGSAWS'
 ORIG_CLASS_IDS = [1, 2, 3, 4, 5, 6, 8, 9, 10, 11] # suturing labels
@@ -25,16 +34,16 @@ NUM_CLASSES = len(CLASSES)
 # Standard JIGSAWS experimental setup. In particular, it's the only
 # recognition setup that exists, corresponding to
 # JIGSAWS/Experimental/Suturing/unBalanced/GestureRecognition/UserOut
-# (User H's 2nd trial is left out because no video was available for labeling.)
+# (User H's 2nd trial is left out because no video was available for labeling.)    
 USER_TO_TRIALS = {
- #   'B': [1, 2, 3, 4, 5],
-#    'C': [1, 2, 3, 4, 5],
-#    'D': [1, 2, 3, 4, 5],
-#    'E': [1, 2, 3, 4, 5],
-#    'F': [1, 2, 3, 4, 5],
-#    'G': [1, 2, 3, 4, 5]
-    'H': [1,    3, 4, 5],
-#    'I': [1, 2, 3, 4, 5]
+  'B': [1, 2, 3, 4, 5],
+   'C': [1, 2, 3, 4, 5],
+   'D': [1, 2, 3, 4, 5],
+   'E': [1, 2, 3, 4, 5],
+   'F': [1, 2, 3, 4, 5],
+   'G': [1, 2, 3, 4, 5],
+   'H': [1,    3, 4, 5],
+  'I': [1, 2, 3, 4, 5]
 }
 
 ALL_USERS = sorted(USER_TO_TRIALS.keys())
@@ -66,9 +75,9 @@ def define_and_process_args():
     parser = argparse.ArgumentParser(description=description,
                                      formatter_class=formatter_class)
 
-    parser.add_argument('--data_dir', default='/home/kris_po/sequence/features_SU/',
+    parser.add_argument('--data_dir', default='/automount_offline/nil/home_mixed/frames_SU/',
                         help='Data directory.')
-    parser.add_argument('--data_filename', default='standardized_data.pkl',
+    parser.add_argument('--data_filename', default='standardized_img_data_H.pkl',
                         help='''The name of the standardized-data pkl file that
                                 we'll create inside data_dir.''')
 
@@ -99,21 +108,42 @@ def load_kinematics(data_dir, trial_name):
     Returns:
         A 2-D NumPy array with time on the first axis.
     """
+    name = trial_name
+    first_file=True
+    capture = '_capture2' in trial_name
+    trial_name=trial_name.replace('_capture1','')
+    trial_name=trial_name.replace('_capture2','')
+    file_list = df_labels[df_labels['filename'].str.contains(trial_name)]['filename']
+    file_list = downsample(file_list,10)
+    #file_list.pop(0)
+    #print(file_list)
+    for file in file_list:
+        if capture:
+            file=file.replace('test','_capture2test')
+        else:
+            file=file.replace('test','_capture1test')
+        kinematics_path = os.path.join(data_dir, file)
+        print(kinematics_path)
+        np_image = cv2.imread(kinematics_path)
+        shape = np_image.shape
+        if first_file:
+            if shape[0]==480:
+                img_data = ia.Scale(0.5).augment_image(np_image)
+            else:
+                img_data = np_image
+            first_file = False
+            img_data = np.expand_dims(img_data, axis=0)
+        else:
+            if shape[0]==480:
+                images = ia.Scale(0.5).augment_image(np_image)
+            else:
+                images = np_image
+            images = np.expand_dims(images, axis=0)
+            img_data=np.concatenate([img_data,images],axis=0)
+    print('img_data',img_data.shape)
+    return np.array(img_data)
 
-    #kinematics_dir = os.path.join(data_dir, 'kinematics', 'AllGestures')
-    kinematics_path = os.path.join(data_dir, trial_name + ".npy")
-    data = np.load(kinematics_path)
-    data = data[:,:]
-    return data
 
-def sample(labels_data):
-    userdata = {}
-    labels = np.unique(labels_data)
-    for i in labels:
-        userdata[i] = 500
-    return userdata
-        
-    
 def load_kinematics_and_labels(data_dir, trial_name):
     """ Load kinematics data and labels.
 
@@ -126,45 +156,17 @@ def load_kinematics_and_labels(data_dir, trial_name):
         as a new column to the raw kinematics data (and are therefore
         represented as floats).
     """
-    '''
-    labels_dir = os.path.join(data_dir, 'transcriptions')
-    labels_path = os.path.join(labels_dir, trial_name + '.txt')
-
-    
-    raw_labels_data = np.genfromtxt(labels_path, dtype=np.int,
-                                    converters=LABELS_CONVERTERS,
-                                    usecols=LABELS_USECOLS)
-    frames = np.arange(1, kinematics_data.shape[0]+1, dtype=np.int)
-    labels = np.zeros(frames.shape, dtype=np.int)
-    for start, end, label in raw_labels_data:
-        mask = (frames >= start) & (frames <= end)
-        labels[mask] = label
-    labels_data = labels.reshape(-1, 1)
-    '''
-    print('TRIAL NAME:', trial_name)
     kinematics_data = load_kinematics(data_dir, trial_name)
     trial_name=trial_name.replace('_capture1','')
     trial_name=trial_name.replace('_capture2','')
     val = df_labels.loc[df_labels['filename'].str.match(trial_name),['label']]
     labels_data=np.array(val)
-        
-    if 'Suturing_G001' in trial_name:
-        kinematics_data = downsample(kinematics_data,factor=8)
-        labels_data = downsample(labels_data,factor=8)
-    else:
-        kinematics_data = downsample(kinematics_data)
-        labels_data = downsample(labels_data)
-    
+    labels_data = downsample(labels_data,10)
     print(kinematics_data.shape,labels_data.shape)
-    smt = SMOTETomek(sampling_strategy='auto', ratio=sample(labels_data))
-    X_smt, y_smt = smt.fit_sample(kinematics_data, labels_data)
-    y_smt = np.expand_dims(y_smt, axis=1)
-    print('X_smt.shape:',X_smt.shape,y_smt.shape)
-    data = np.concatenate([X_smt, y_smt], axis=1)
-    #labeled_data_only_mask = labels_data.flatten() != 0
+    #labels_data = np.append([kinematics_data, labels_data], axis=0)
+    labeled_data_only_mask = labels_data.flatten() != 0
 
-    return data#[labeled_data_only_mask, :]
-
+    return kinematics_data,labels_data
 
 def load_kinematics_and_new_labels(data_dir, trial_name):
     """ Load kinematics data and standardized labels.
@@ -178,14 +180,14 @@ def load_kinematics_and_new_labels(data_dir, trial_name):
         a new column and are converted from arbitrary labels (e.g., 1, 3, 5)
         to ordered, nonnegative integers (e.g., 0, 1, 2).
     """
-    data = load_kinematics_and_labels(data_dir, trial_name)
+    data,labels = load_kinematics_and_labels(data_dir, trial_name)
     for orig, new in zip(ORIG_CLASS_IDS, NEW_CLASS_IDS):
-        mask = data[:, -1] == orig
-        data[mask, -1] = new
-    return data
+        mask = labels[:, -1] == orig
+        labels[mask, -1] = new
+    return (data,labels)
 
 
-def downsample(data, factor=3):
+def downsample(data, factor=6):
     """ Downsample a data matrix.
 
     Args:
@@ -195,8 +197,7 @@ def downsample(data, factor=3):
     Returns:
         A 2-D NumPy array.
     """
-    return data[::factor, :]
-
+    return data[::factor]
 
 def main():
     """ Create a standardized data file from raw data. """
@@ -231,26 +232,9 @@ def main():
     print()
 
     # Original data is at 30 Hz.
-    all_data = {trial_name: (
-                    load_kinematics_and_new_labels(args.data_dir, trial_name))
-                for trial_name in all_trial_names}
-
-        
+    all_data = {trial_name: 
+                    load_kinematics_and_new_labels(args.data_dir, trial_name)   for trial_name in all_trial_names}
     print('Downsampled to 5 Hz.')
-    print()
-
-    fig, ax_list = plt.subplots(nrows=len(all_data),sharex=True, figsize=(15, 50))
-    trial = True
-    for ax, (trial_name, data_mat) in zip(ax_list, sorted(all_data.items())):
-        plt.sca(ax)
-        data.plot_label_seq(data_mat[:, -1:], NUM_CLASSES, 0,trial)
-        trial = False
-        plt.title(trial_name)
-    #plt.tight_layout()
-    vis_path = os.path.join(args.data_dir, 'standardized_data_labels.png')
-    plt.savefig(vis_path)
-    plt.close(fig)
-    print('Saved label visualization to %s.' % vis_path)
     print()
 
     export_dict = dict(
@@ -260,7 +244,8 @@ def main():
         all_trial_names=all_trial_names, all_data=all_data)
     standardized_data_path = os.path.join(args.data_dir, args.data_filename)
     with open(standardized_data_path, 'wb') as f:
-        cPickle.dump(export_dict, f,protocol=2)
+        #cPickle.dump(all_data, f,protocol=2)
+        cPickle.dump(export_dict,f,protocol=2)
     print('Saved standardized data file %s.' % standardized_data_path)
     print()
 
